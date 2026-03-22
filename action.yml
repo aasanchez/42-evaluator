@@ -7,7 +7,7 @@ inputs:
     required: false
     default: 'http://localhost:3000'
   team:
-    description: 'Team name for results and leaderboard'
+    description: 'Team name for results'
     required: false
     default: 'anonymous'
   launch-secret:
@@ -118,27 +118,3 @@ runs:
 
         gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
 
-    - name: Update leaderboard
-      if: always()
-      shell: bash
-      run: |
-        if [ ! -f results.json ]; then
-          echo "No results.json — skipping leaderboard update"
-          exit 0
-        fi
-
-        TEAM="${{ inputs.team }}"
-        GRAND=$(jq -r '.summary.grandTotal' results.json)
-        MAX=$(jq -r '.summary.maxGrandTotal' results.json)
-
-        git config user.name "42-Evaluator Bot"
-        git config user.email "evaluator@42-challenge.dev"
-
-        git fetch origin main || true
-        git checkout main -- LEADERBOARD.md 2>/dev/null || true
-
-        bash ${{ github.action_path }}/scoring/update-leaderboard.sh results.json LEADERBOARD.md
-
-        git add LEADERBOARD.md
-        git commit -m "leaderboard: update ${TEAM} → ${GRAND}/${MAX}" || echo "No leaderboard changes"
-        git push origin HEAD:main || echo "WARNING: Could not push leaderboard update"

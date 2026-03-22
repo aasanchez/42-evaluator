@@ -61,7 +61,6 @@ steps:
 3. Uploads results as a GitHub artifact
 4. Posts a score summary as a PR comment
    (on pull requests)
-5. Updates the LEADERBOARD.md in your repo
 
 ## Local Testing
 

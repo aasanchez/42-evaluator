@@ -1,0 +1,144 @@
+name: '42-Challenge Backend Evaluator'
+description: 'Evaluates a backend implementation against the 42-Challenge specification'
+
+inputs:
+  backend-url:
+    description: 'URL of the backend to evaluate'
+    required: false
+    default: 'http://localhost:3000'
+  team:
+    description: 'Team name for results and leaderboard'
+    required: false
+    default: 'anonymous'
+  launch-secret:
+    description: 'HMAC secret for Trial VII verification'
+    required: false
+    default: 'default-secret-change-me'
+  concurrency:
+    description: 'Number of concurrent goroutines for stress test'
+    required: false
+    default: '50'
+  rounds:
+    description: 'Number of rounds per goroutine in stress test'
+    required: false
+    default: '100'
+
+outputs:
+  score:
+    description: 'Base score achieved'
+    value: ${{ steps.extract.outputs.score }}
+  max-score:
+    description: 'Maximum possible base score'
+    value: ${{ steps.extract.outputs.max_score }}
+  bonus:
+    description: 'Bonus points achieved'
+    value: ${{ steps.extract.outputs.bonus }}
+  grand-total:
+    description: 'Grand total (base + bonus)'
+    value: ${{ steps.extract.outputs.grand_total }}
+  results-path:
+    description: 'Path to results.json'
+    value: ${{ steps.run.outputs.results_path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Run evaluator
+      id: run
+      shell: bash
+      run: |
+        chmod +x ${{ github.action_path }}/evaluator
+        ${{ github.action_path }}/evaluator \
+          -url "${{ inputs.backend-url }}" \
+          -team "${{ inputs.team }}" \
+          -secret "${{ inputs.launch-secret }}" \
+          -concurrency "${{ inputs.concurrency }}" \
+          -rounds "${{ inputs.rounds }}" \
+          -output results.json
+        echo "results_path=${{ github.workspace }}/results.json" >> "$GITHUB_OUTPUT"
+
+    - name: Extract scores
+      id: extract
+      shell: bash
+      run: |
+        echo "score=$(jq -r '.summary.total' results.json)" >> "$GITHUB_OUTPUT"
+        echo "max_score=$(jq -r '.summary.maxTotal' results.json)" >> "$GITHUB_OUTPUT"
+        echo "bonus=$(jq -r '.summary.bonus' results.json)" >> "$GITHUB_OUTPUT"
+        echo "grand_total=$(jq -r '.summary.grandTotal' results.json)" >> "$GITHUB_OUTPUT"
+
+    - name: Upload results artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: evaluator-results-${{ inputs.team }}
+        path: results.json
+
+    - name: Post PR comment
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        TEAM="${{ inputs.team }}"
+        TOTAL=$(jq -r '.summary.total' results.json)
+        MAX=$(jq -r '.summary.maxTotal' results.json)
+        BONUS=$(jq -r '.summary.bonus' results.json)
+        GRAND=$(jq -r '.summary.grandTotal' results.json)
+
+        TRIALS_TABLE=""
+        while IFS= read -r line; do
+          TRIAL=$(echo "$line" | jq -r '.trial')
+          NAME=$(echo "$line" | jq -r '.name')
+          SCORE=$(echo "$line" | jq -r '.score')
+          MAX_SCORE=$(echo "$line" | jq -r '.maxScore')
+          if [ "$SCORE" = "$MAX_SCORE" ]; then
+            STATUS="PASS"
+          else
+            STATUS="PARTIAL"
+          fi
+          TRIALS_TABLE="${TRIALS_TABLE}| ${TRIAL} — ${NAME} | ${SCORE}/${MAX_SCORE} | ${STATUS} |\n"
+        done < <(jq -c '.trials[]' results.json)
+
+        P95=$(jq -r '.stress.p95Ms // "N/A"' results.json)
+        BOSS_PASSED=$(jq -r '.boss.passed // false' results.json)
+        BOSS_DETAIL=$(jq -r '.boss.detail // "N/A"' results.json)
+
+        if [ "$BOSS_PASSED" = "true" ]; then
+          BOSS_STATUS="DEFEATED (+10)"
+        else
+          BOSS_STATUS="survived"
+        fi
+
+        BODY="## Backend Evaluation — ${TEAM}
+
+        **Score: ${TOTAL}/${MAX} + ${BONUS} bonus = ${GRAND}**
+
+        | Trial | Score | Status |
+        |-------|-------|--------|
+        $(echo -e "$TRIALS_TABLE")
+
+        Stress: p95=${P95}ms | Boss: ${BOSS_STATUS} — ${BOSS_DETAIL}"
+
+        gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+
+    - name: Update leaderboard
+      if: always()
+      shell: bash
+      run: |
+        if [ ! -f results.json ]; then
+          echo "No results.json — skipping leaderboard update"
+          exit 0
+        fi
+
+        TEAM="${{ inputs.team }}"
+        GRAND=$(jq -r '.summary.grandTotal' results.json)
+        MAX=$(jq -r '.summary.maxGrandTotal' results.json)
+
+        git config user.name "42-Evaluator Bot"
+        git config user.email "evaluator@42-challenge.dev"
+
+        git fetch origin main || true
+        git checkout main -- LEADERBOARD.md 2>/dev/null || true
+
+        bash ${{ github.action_path }}/scoring/update-leaderboard.sh results.json LEADERBOARD.md
+
+        git add LEADERBOARD.md
+        git commit -m "leaderboard: update ${TEAM} → ${GRAND}/${MAX}" || echo "No leaderboard changes"
+        git push origin HEAD:main || echo "WARNING: Could not push leaderboard update"

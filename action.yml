@@ -67,7 +67,7 @@ runs:
         echo "grand_total=$(jq -r '.summary.grandTotal' results.json)" >> "$GITHUB_OUTPUT"
 
     - name: Upload results artifact
-      uses: actions/upload-artifact@v5
+      uses: actions/upload-artifact@v7.0.0
       with:
         name: evaluator-results-${{ inputs.team }}
         path: results.json
